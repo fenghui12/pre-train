@@ -1,0 +1,136 @@
+Ollama 模型自定义与微调实战指南：从 GGUF 导入到 LoRA 调优
+alex 收录于 类别 Ai Ai-Models-Tech Tech-Tutorials
+ 2025-07-07  2025-07-07  约 1189 字   预计阅读 6 分钟 
+Ollama 的轻量化部署能力让很多人开始探索如何接入自己的定制模型。这篇文章是我在实战中整理的完整流程，包括自定义模型导入、角色提示调校、LoRA 精调和量化优化等。如果你也想用 Ollama 做个 Mario、Siri、天线宝宝模型，或者训练自己的客服机器人，那就别错过了。
+
+1 一、自定义模型导入：从 GGUF 到本地运行
+Ollama 支持直接从 GGUF 格式模型导入，我们可以通过一个 Modelfile 自定义模型配置：
+
+
+
+
+# 创建 Modelfile
+FROM ./your-model.gguf
+然后运行以下命令创建模型：
+
+
+
+
+ollama create your-model-name -f Modelfile
+ollama run your-model-name
+这个过程其实很简单，唯一要注意的是路径别写错，.gguf 模型要和 Modelfile 在同一目录，或者使用绝对路径。
+
+如果你还没下载好模型文件，可以参考这篇 ollamaollama-start，教你怎么获取开源模型。
+
+2 二、个性化提示定制：让你的模型“带点人设”
+我们可以通过修改 Modelfile 来定制系统级提示（system prompt），比如让 LLaMA2 扮演“超级马里奥”：
+
+
+
+
+FROM llama2
+PARAMETER temperature 1
+SYSTEM "你是超级马里奥，用角色身份回答问题"
+然后一样：
+
+
+
+
+ollama create mario -f Modelfile
+ollama run mario
+这个方法特别适合做角色扮演 Bot，或者统一语气风格的客服模型。和微调比起来，门槛低很多，但效果在一些场景也够用了。
+
+3 三、LoRA 微调：更深层的模型定制玩法
+如果你对提示调教不过瘾，想“改模型脑回路”，那 LoRA 微调是目前成本最低的方案。
+
+3.1 环境要求
+NVIDIA RTX 3090 / 4090，建议显存 24GB+
+Python 环境，安装依赖：
+
+
+
+pip install torch transformers peft
+curl -fsSL https://ollama.com/install.sh | sh
+确保 CUDA 可用，否则后面全白搭。
+
+3.2 微调步骤（基于 LLaMA-Factory）
+克隆仓库并安装：
+
+
+
+git clone https://github.com/hiyouga/LLaMA-Factory.git
+pip install -e .[metrics]
+数据格式如下（JSONL 格式）：
+
+
+
+[
+  {
+    "instruction": "问题文本",
+    "input": "补充信息",
+    "output": "期望答案"
+  }
+]
+并注册到 dataset_info.json 中：
+
+
+
+
+"your_dataset": {"file_name": "data.json"}
+启动微调（命令行方式）：
+
+
+
+python src/train_bash.py --model_name_or_path llama3-8b --dataset your_dataset --lora_rank 8
+或者用 WebUI 方式：
+
+
+
+python src/webui.py
+界面上点点点就能启动训练，适合不熟命令行的同学。
+
+4 四、部署优化：量化 & API 接入技巧
+4.1 4-bit 量化能救命
+原始 70B 模型需要 350GB 显存？搞笑呢！咱们直接上 4-bit 量化版本：
+
+
+
+
+./quantize your-model.f32.gguf your-model.q4.gguf Q4_K
+这个 .gguf 就能直接接入 Ollama。
+
+补充：想了解如何把微调后的模型接入推理，也可以看看这篇 text-generation-webui部署最新教程
+
+4.2 改存储目录（释放系统盘空间）
+Windows 上 Ollama 默认把所有模型塞进 C:\Users\xxx\.ollama，会把系统盘吃爆。
+
+建议新建环境变量：
+
+
+
+
+OLLAMA_MODELS=D:\ollama-models
+再重启终端即可。
+
+4.3 API 调用参数推荐
+如果你打算通过编程调用 Ollama，本人实测推荐如下参数：
+
+
+
+
+{
+  "temperature": 0.3,
+  "max_tokens": 200,
+  "top_p": 0.9
+}
+对于精确任务（总结、代码生成）非常友好，避免胡言乱语。
+
+5 五、常见问题与技巧汇总
+问题	建议解决方案
+显存不足	使用 4-bit 量化，或 --load_in_4bit 参数
+微调无效	增加 LoRA 秩（r），调高学习率
+模型不识别	检查 Modelfile 格式，确认模型路径无误
+AMD 显卡	手动编译 llama.cpp 并启用 ROCm 支持
+快速定制：使用 Modelfile + system prompt，门槛低
+中级玩家：LoRA + LLaMA-Factory，效果好但要 GPU
+部署建议：量化 + API 封装，效率高可生产
