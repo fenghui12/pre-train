@@ -1,115 +1,67 @@
-# LoRA 微调与管理助手
+# LLM 微调与管理助手 v2.0
 
-这是一个用于 LoRA (Low-Rank Adaptation) 微调大型语言模型并进行管理的工具。它提供了一个直观的图形用户界面 (GUI)，使用户能够轻松地训练自定义 LoRA 模型，并将其合并、转换为 GGUF 格式，最终导入到 Ollama 中进行本地推理。
+这是一个集成了模型训练、管理和推理功能的一站式桌面应用。它提供了一个现代化的图形用户界面 (GUI)，使用户能够轻松地训练自定义 LoRA 模型，管理和转换模型格式，并立即进行聊天测试。
 
 ## 主要功能
 
-- **基座模型发现:**
-  - 自动扫描本地 Hugging Face 缓存目录，发现所有已下载的基座模型，并在UI中提供选择。
-- **LoRA 模型训练:**
-  - 支持从本地发现的基座模型进行 LoRA 微调。
-  - 支持在现有 LoRA 适配器上继续训练。
-  - 训练过程实时进度和日志显示。
-- **模型管理与导入:**
-  - **(新功能)** 直接将任意 Hugging Face 基座模型转换为 GGUF 格式并导入到 Ollama，如果模型不在本地会自动下载。
-  - 将微调后的 LoRA 适配器与基座模型合并。
-  - 将合并后的模型转换为 GGUF 格式，兼容 `llama.cpp` 和 Ollama。
-  - 自动导入 GGUF 模型到 Ollama，方便本地部署和推理。
-- **推理界面:**
-  - 提供一个独立的 GUI 界面，用于加载微调后的模型进行交互式推理。
-  - 支持多轮对话和上下文记忆。
+- **统一的UI体验**: 所有功能都整合在一个采用多标签页设计的现代化界面中，工作流清晰，操作直观。
+- **训练功能**:
+  - 支持**新 LoRA 训练**和**继续训练现有 LoRA** 两种模式。
+  - 自动扫描本地 Hugging Face 缓存，发现可用的基座模型。
+- **模型管理**:
+  - **合并 LoRA**: 将训练好的 LoRA 适配器与基座模型合并，并一键导入到 Ollama。
+  - **转换基座模型**: 支持将任意 Hugging Face 模型（如果本地没有会自动下载）转换为 GGUF 格式并导入 Ollama。
+- **集成推理**:
+  - 内置聊天界面，可加载任意本地模型（基座或LoRA）进行即时对话测试。
+  - 支持上下文记忆模式。
+- **可配置性**:
+  - 通过UI界面和 `config.json` 文件管理外部工具（如 `llama.cpp`）的路径，增强了健壮性。
 
 ## 项目结构
 
-- `train_core.py`: 核心训练逻辑，负责 LoRA 微调的实际执行。
-- `train_ui.py`: 训练功能的图形用户界面。
-- `inference_core.py`: 核心推理逻辑，负责加载模型和生成响应。
-- `inference_ui.py`: 推理功能的图形用户界面。
-- `merge_and_import.py`: 模型合并、GGUF 转换和 Ollama 导入的逻辑。
+- `main_app.py`: **(新)** 应用主入口，包含所有UI和业务逻辑。
+- `train_core.py`: 核心训练逻辑。
+- `inference_core.py`: 核心推理逻辑。
+- `merge_and_import.py`: 模型合并、转换和导入的逻辑。
+- `azure.tcl`, `config.json`: **(新)** UI主题和配置文件。
 - `requirements.txt`: 项目 Python 依赖项。
 - `shangganwenxue.jsonl`, `zhexuejia.jsonl`: 示例数据集。
-- `lora_*_finetuned/`: 训练输出目录，包含 LoRA 适配器和训练日志。
 
 ## 安装与使用
 
 ### 1. 环境准备
 
-确保您的系统安装了 Python 3.9+ 和 `pip`。
-
-建议使用 `conda` 或 `venv` 创建虚拟环境：
-
-```bash
-conda create -n lora_env python=3.10
-conda activate lora_env
-```
+(与之前相同)
 
 ### 2. 安装依赖
 
-首先，根据您的 CUDA 版本安装 PyTorch。访问 [PyTorch 官网](https://pytorch.org/get-started/locally/) 获取适合您系统的命令。例如，对于 CUDA 11.8：
+(与之前相同)
 
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+### 3. 配置 (重要)
 
-然后，安装项目所需的其他依赖：
+首次运行前，请完成以下配置：
 
-```bash
-pip install -r requirements.txt
-```
+- **克隆 `llama.cpp`**: `merge_and_import.py` 依赖于 `llama.cpp` 仓库中的转换脚本。请将其克隆到您电脑的任意位置。
+  ```bash
+  git clone https://github.com/ggerganov/llama.cpp.git
+  ```
+- **运行应用并设置路径**: 
+  1. 启动主程序：
+     ```bash
+     python main_app.py
+     ```
+  2. 切换到 **[设置 (Settings)]** 标签页。
+  3. 点击“浏览...”按钮，选择您刚刚克隆的 `llama.cpp` 仓库的根目录。
+  4. 点击“保存设置”。
 
-**注意:** `bitsandbytes` 在 Windows 上可能需要额外的编译步骤。如果遇到问题，请参考其官方文档。
+### 4. 使用方法
 
-### 3. 克隆 `llama.cpp` (用于模型合并与导入)
-
-`merge_and_import.py` 依赖于 `llama.cpp` 仓库中的转换脚本。请将其克隆到项目目录的父目录或您的用户主目录中：
-
-```bash
-# 克隆到项目父目录
-git clone https://github.com/ggerganov/llama.cpp.git ../llama.cpp
-
-# 或者克隆到用户主目录
-git clone https://github.com/ggerganov/llama.cpp.git ~/llama.cpp
-```
-
-### 4. 运行训练 GUI
-
-```bash
-python train_ui.py
-```
-
-在训练界面中：
-
-- **新 LoRA 训练:** 在“基座模型”下拉框中选择一个模型，选择训练数据 (JSONL 格式)，指定输出目录，然后点击“开始新 LoRA 训练”。
-- **继续训练现有 LoRA:** 选择一个本地已训练的 LoRA 模型目录，选择新的训练数据，指定输出目录，然后点击“继续训练”。
-
-### 5. 模型管理与导入到 Ollama
-
-在 `train_ui.py` 界面的“模型管理”部分：
-
-- **转换基座模型 (灵活):**
-  1. 点击“转换基座模型到 Ollama”按钮。
-  2. 在弹出的对话框中，输入或确认您想转换的 Hugging Face 模型 ID。如果模型不在本地，将会自动下载。
-  3. 输入您希望在 Ollama 中使用的模型名称。
-
-- **合并 LoRA 模型:**
-  1. 在“选择要合并的LoRA模型”下拉框中选择一个已训练的 LoRA 模型目录。
-  2. 点击“合并 LoRA 并导入到 Ollama”。
-  3. 输入您希望在 Ollama 中使用的模型名称。
-
-**注意:** 确保您已安装 Ollama 并正在运行。
-
-### 6. 运行推理 GUI
-
-```bash
-python inference_ui.py
-```
-
-在推理界面中：
-
-- 点击“选择目录...”选择一个包含 `final_lora_adapter` 子目录的训练输出目录。
-- 点击“加载模型”加载模型。
-- 输入指令和输入文本，点击“发送”进行推理。
-- 可以选择启用上下文模式以保留对话记忆。
+- **训练**: 
+  - 在 **[训练 (Train)]** 标签页中，选择训练模式（新训练或继续训练），选择模型和数据，然后点击“开始训练”。
+- **管理与转换**:
+  - 在 **[模型管理 (Manage)]** 标签页中，执行合并LoRA或转换基座模型的操作。
+- **推理测试**:
+  - 在 **[推理 (Inference)]** 标签页中，从下拉框选择任意一个可用模型，加载后即可开始对话。
 
 ## 示例数据格式
 
