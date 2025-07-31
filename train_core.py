@@ -12,25 +12,51 @@ from peft import PeftConfig # 导入 PeftConfig
 # --- Local LoRA Model Integration ---
 def get_local_lora_base_models(base_path="."):
     """
-    扫描指定路径下所有包含 'final_lora_adapter' 子目录的路径，
-    并从其 adapter_config.json 中提取原始基座模型的名称。
-    返回一个包含这些唯一基座模型名称的列表。
+    扫描 Hugging Face 缓存目录，查找所有本地已下载的基座模型。
+    返回一个包含这些模型ID的列表。
     """
-    base_model_ids = set() # 使用集合来存储唯一的模型ID
-    for root, dirs, files in os.walk(base_path):
-        if "final_lora_adapter" in dirs:
-            lora_adapter_dir = os.path.join(root, "final_lora_adapter")
-            adapter_config_path = os.path.join(lora_adapter_dir, "adapter_config.json")
-            if os.path.exists(adapter_config_path):
-                try:
-                    with open(adapter_config_path, 'r') as f:
-                        config = json.load(f)
-                        base_model_name = config.get("base_model_name_or_path")
-                        if base_model_name:
-                            base_model_ids.add(base_model_name)
-                except Exception as e:
-                    logging.warning(f"无法读取或解析 {adapter_config_path}: {e}")
-    return sorted(list(base_model_ids)), None # 返回排序后的列表和None
+    model_ids = set()
+    # 优先使用 HF_HOME 环境变量，如果不存在，则使用默认的缓存路径
+    # os.path.expanduser("~") 会自动获取当前用户的主目录，确保了代码的可移植性
+    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+    hub_path = os.path.join(hf_home, "hub")
+    
+    logging.info(f"正在扫描 Hugging Face 缓存目录: {hub_path}")
+
+    if not os.path.exists(hub_path):
+        logging.warning(f"Hugging Face 缓存目录不存在: {hub_path}")
+        return [], f"Hugging Face cache directory not found at {hub_path}"
+
+    for item in os.listdir(hub_path):
+        # 模型文件夹通常以 'models--' 开头
+        if item.startswith("models--"):
+            model_dir = os.path.join(hub_path, item)
+            if os.path.isdir(model_dir):
+                # 检查是否存在 config.json 来判断是否为有效的模型目录
+                # 有些模型版本可能没有 snapshots 目录，直接在根目录
+                if os.path.exists(os.path.join(model_dir, "config.json")):
+                    model_name = item.replace("models--", "").replace("--", "/")
+                    model_ids.add(model_name)
+                    continue # 继续检查下一个
+
+                snapshots_dir = os.path.join(model_dir, "snapshots")
+                if os.path.exists(snapshots_dir) and os.path.isdir(snapshots_dir):
+                    # 遍历 snapshots 目录下的所有版本
+                    for snapshot_version in os.listdir(snapshots_dir):
+                        snapshot_path = os.path.join(snapshots_dir, snapshot_version)
+                        config_path = os.path.join(snapshot_path, "config.json")
+                        if os.path.exists(config_path):
+                            # 从文件夹名称解析出模型ID
+                            # 'models--Qwen--Qwen1.5-7B-Chat' -> 'Qwen/Qwen1.5-7B-Chat'
+                            model_name = item.replace("models--", "").replace("--", "/")
+                            model_ids.add(model_name)
+                            break # 找到一个有效的版本就足够了
+    
+    if not model_ids:
+        logging.warning("在缓存目录中没有找到任何有效的模型。")
+        return [], "No valid models found in the cache."
+        
+    return sorted(list(model_ids)), None
 
 def get_existing_lora_dirs(base_path="."):
     """

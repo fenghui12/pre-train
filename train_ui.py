@@ -6,12 +6,12 @@ import time
 import os
 import json
 from train_core import start_training, get_local_lora_base_models, get_existing_lora_dirs
-from merge_and_import import do_merge_and_import
+from merge_and_import import do_merge_and_import, convert_base_model_to_ollama
 
 class TrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("LoRA 微调与管理助手 v1.1")
+        self.root.title("LoRA 微调与管理助手 v1.3")
 
         # --- Queues for threading ---
         self.progress_queue = queue.Queue()
@@ -113,7 +113,7 @@ class TrainingGUI:
         # Merge and Import to Ollama
         self.merge_ollama_frame = ttk.Frame(self.management_frame)
         self.merge_ollama_frame.pack(fill=tk.X, expand=False, pady=5)
-        self.merge_ollama_label = ttk.Label(self.merge_ollama_frame, text="选择要合并的模型:")
+        self.merge_ollama_label = ttk.Label(self.merge_ollama_frame, text="选择要合并的LoRA模型:")
         self.merge_ollama_label.pack(side=tk.LEFT, padx=(0, 5))
         self.merge_ollama_combobox = ttk.Combobox(self.merge_ollama_frame, state="readonly", width=60)
         self.merge_ollama_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
@@ -122,7 +122,15 @@ class TrainingGUI:
         self.merge_ollama_refresh_button.pack(side=tk.RIGHT, padx=5)
 
         self.merge_button = ttk.Button(self.management_frame, text="合并 LoRA 并导入到 Ollama", command=self.start_merge_and_import_thread)
-        self.merge_button.pack(pady=5)
+        self.merge_button.pack(pady=(5, 0))
+        
+        ttk.Separator(self.management_frame, orient='horizontal').pack(fill='x', pady=10)
+
+        # Convert Base Model to Ollama
+        self.convert_base_label = ttk.Label(self.management_frame, text="转换任意 Hugging Face 基座模型:")
+        self.convert_base_label.pack(pady=(5,0))
+        self.convert_base_button = ttk.Button(self.management_frame, text="转换基座模型到 Ollama", command=self.start_convert_base_model_thread)
+        self.convert_base_button.pack(pady=5)
 
         # --- Log Viewer ---
         self.log_frame = ttk.LabelFrame(self.main_frame, text="实时日志", padding="10")
@@ -142,27 +150,25 @@ class TrainingGUI:
         self.root.after(100, self.periodic_check)
 
     def _refresh_new_lora_models(self):
-        self.new_lora_model_combobox.set("正在扫描本地 LoRA 基座模型...")
+        self.new_lora_model_combobox.set("正在扫描本地基座模型...")
         self.new_lora_refresh_button.config(state=tk.DISABLED)
-        models, error = get_local_lora_base_models() # 调用新的函数
+        models, error = get_local_lora_base_models()
         if error:
             messagebox.showerror("错误", error)
             self.new_lora_model_combobox.set("扫描失败")
             self.new_lora_model_combobox['values'] = []
         else:
-            # 添加手动输入选项
-            display_models = ["--手动输入 Hugging Face 模型 ID--"] + models
-            self.new_lora_model_combobox['values'] = display_models
+            self.new_lora_model_combobox['values'] = models
             if models:
-                self.new_lora_model_combobox.set(models[0]) # 默认选择第一个识别到的模型
+                self.new_lora_model_combobox.set(models[0])
             else:
-                self.new_lora_model_combobox.set(display_models[0]) # 如果没有模型，默认选择手动输入选项
+                self.new_lora_model_combobox.set("未找到本地缓存的基座模型")
         self.new_lora_refresh_button.config(state=tk.NORMAL)
 
     def _refresh_existing_lora_models(self):
         self.existing_lora_combobox.set("正在扫描本地已训练 LoRA 模型...")
         self.existing_lora_refresh_button.config(state=tk.DISABLED)
-        models, error = get_existing_lora_dirs() # 调用新的函数
+        models, error = get_existing_lora_dirs()
         if error:
             messagebox.showerror("错误", error)
             self.existing_lora_combobox.set("扫描失败")
@@ -178,7 +184,7 @@ class TrainingGUI:
     def _refresh_merge_models(self):
         self.merge_ollama_combobox.set("正在扫描本地已训练 LoRA 模型...")
         self.merge_ollama_refresh_button.config(state=tk.DISABLED)
-        models, error = get_existing_lora_dirs() # 调用新的函数
+        models, error = get_existing_lora_dirs()
         if error:
             messagebox.showerror("错误", error)
             self.merge_ollama_combobox.set("扫描失败")
@@ -221,16 +227,8 @@ class TrainingGUI:
         if self.is_busy(): return
         
         hf_model_id = self.new_lora_model_combobox.get().strip()
-        lora_adapter_path = None
-
-        if hf_model_id == "--手动输入 Hugging Face 模型 ID--":
-            hf_model_id = simpledialog.askstring("输入 Hugging Face 模型 ID", "请输入 Hugging Face 模型 ID (例如: Qwen/Qwen1.5-4B-Chat):")
-            if not hf_model_id:
-                messagebox.showwarning("警告", "未输入 Hugging Face 模型 ID，训练已取消。")
-                return
-
-        if not hf_model_id:
-            messagebox.showerror("错误", "请选择或输入一个有效的 Hugging Face 模型 ID！")
+        if not hf_model_id or "扫描失败" in hf_model_id or "未找到" in hf_model_id:
+            messagebox.showerror("错误", "请先从下拉框选择一个有效的基座模型！")
             return
 
         if not self.selected_data_file_new_lora:
@@ -244,11 +242,9 @@ class TrainingGUI:
         self.set_ui_busy(True)
         self.clear_logs()
         
-        messagebox.showinfo("模型路径提示", f"将基于 Hugging Face 模型 '{hf_model_id}' 从头开始训练新的 LoRA 适配器。")
-
         self.training_thread = threading.Thread(
             target=start_training,
-            args=(hf_model_id, self.selected_data_file_new_lora, output_dir, self.progress_queue, self.log_queue, lora_adapter_path),
+            args=(hf_model_id, self.selected_data_file_new_lora, output_dir, self.progress_queue, self.log_queue, None),
             daemon=True
         )
         self.training_thread.start()
@@ -266,7 +262,6 @@ class TrainingGUI:
             messagebox.showerror("错误", f"在 '{lora_base_dir}' 中未找到有效的 'final_lora_adapter' 子目录或其配置文件。")
             return
 
-        # 从 adapter_config.json 中读取原始基座模型名称
         hf_model_id = None
         try:
             with open(os.path.join(lora_adapter_path, "adapter_config.json"), 'r') as f:
@@ -290,8 +285,6 @@ class TrainingGUI:
         self.set_ui_busy(True)
         self.clear_logs()
         
-        messagebox.showinfo("模型路径提示", f"将基于原始基座模型 '{hf_model_id}' 和现有 LoRA 适配器 '{lora_adapter_path}' 继续训练。")
-
         self.training_thread = threading.Thread(
             target=start_training,
             args=(hf_model_id, self.selected_data_file_continue_lora, output_dir, self.progress_queue, self.log_queue, lora_adapter_path),
@@ -323,6 +316,43 @@ class TrainingGUI:
         self.merge_thread = threading.Thread(
             target=do_merge_and_import,
             args=(final_adapter_path, ollama_model_name, self.merge_log_queue.put),
+            daemon=True
+        )
+        self.merge_thread.start()
+
+    def start_convert_base_model_thread(self):
+        if self.is_busy(): return
+
+        # 预先获取当前选中的模型作为默认值
+        current_model = self.new_lora_model_combobox.get().strip()
+        if "扫描失败" in current_model or "未找到" in current_model:
+            current_model = ""
+
+        # 弹出对话框让用户输入或确认模型ID
+        base_model_id = simpledialog.askstring(
+            "输入 Hugging Face 模型 ID", 
+            "请输入要转换的 Hugging Face 模型 ID (如果模型不在本地，将自动下载):",
+            initialvalue=current_model
+        )
+        
+        if not base_model_id:
+            messagebox.showinfo("取消", "操作已取消。")
+            return
+
+        base_model_id = base_model_id.strip()
+
+        default_name = base_model_id.split('/')[-1].lower() + ":latest"
+        ollama_model_name = simpledialog.askstring("输入 Ollama 模型名称", "请输入您想在 Ollama 中使用的新模型名称:", initialvalue=default_name)
+        if not ollama_model_name:
+            return
+
+        self.set_ui_busy(True)
+        self.clear_logs()
+        self.status_label.config(text=f"状态: 正在转换基座模型 {base_model_id}...")
+
+        self.merge_thread = threading.Thread(
+            target=convert_base_model_to_ollama,
+            args=(base_model_id, ollama_model_name, self.merge_log_queue.put),
             daemon=True
         )
         self.merge_thread.start()
@@ -393,6 +423,7 @@ class TrainingGUI:
         self.merge_ollama_combobox.config(state='readonly' if busy else 'normal')
         self.merge_ollama_refresh_button.config(state=state)
         self.merge_button.config(state=state)
+        self.convert_base_button.config(state=state) # Also disable the new button
 
     def is_busy(self):
         if (self.training_thread and self.training_thread.is_alive()) or \

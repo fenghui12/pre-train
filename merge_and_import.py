@@ -1,4 +1,3 @@
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig
@@ -39,7 +38,7 @@ def find_llama_cpp_path():
             
     return None
 
-def run_command(command, callback):
+def run_command(command, callback, cwd=None):
     """Runs a shell command and streams its output."""
     log_status(callback, f"Executing command: {' '.join(command)}")
     process = subprocess.Popen(
@@ -48,7 +47,8 @@ def run_command(command, callback):
         stderr=subprocess.STDOUT,
         text=True,
         encoding='utf-8',
-        errors='replace'
+        errors='replace',
+        cwd=cwd # Set the working directory for the command
     )
     
     while True:
@@ -59,6 +59,87 @@ def run_command(command, callback):
             log_status(callback, output.strip())
             
     return process.poll() # Return the exit code
+
+def convert_base_model_to_ollama(base_model_id, ollama_model_name, status_callback=None):
+    """
+    Downloads a base Hugging Face model, converts it to GGUF, and imports it into Ollama.
+    This is a more robust method that avoids path issues with the conversion script.
+    """
+    try:
+        # --- 1. Find llama.cpp ---
+        log_status(status_callback, "Step 1: Searching for llama.cpp repository...")
+        llama_cpp_path = find_llama_cpp_path()
+        if not llama_cpp_path:
+            log_status(status_callback, "ERROR: Could not find the 'llama.cpp' repository.")
+            log_status(status_callback, "Please clone it into your project's parent directory or your home folder from https://github.com/ggerganov/llama.cpp.git")
+            return False
+        convert_script = os.path.join(llama_cpp_path, 'convert_hf_to_gguf.py')
+
+        # --- 2. Use a temporary directory for all artifacts ---
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_status(status_callback, f"Step 2: Using temporary directory: {temp_dir}")
+            hf_model_path = os.path.join(temp_dir, "hf_model")
+
+            # --- 3. Download/Load model from Hugging Face and save it locally ---
+            log_status(status_callback, f"Step 3: Downloading/loading model '{base_model_id}' from Hugging Face...")
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
+                model = AutoModelForCausalLM.from_pretrained(base_model_id, trust_remote_code=True)
+                
+                log_status(status_callback, "Saving model to temporary local path...")
+                model.save_pretrained(hf_model_path)
+                tokenizer.save_pretrained(hf_model_path)
+                log_status(status_callback, "Model saved successfully.")
+            except Exception as e:
+                log_status(status_callback, f"ERROR: Failed to download or save model from Hugging Face: {e}")
+                return False
+
+            # --- 4. Convert to GGUF ---
+            log_status(status_callback, f"Step 4: Converting base model '{base_model_id}' to GGUF format...")
+            gguf_output_path = os.path.join(temp_dir, f"{ollama_model_name}.gguf")
+            
+            # Using f16 as a common default.
+            convert_command = [
+                sys.executable, convert_script, hf_model_path, # Use the local path now
+                '--outfile', gguf_output_path,
+                '--outtype', 'f16'
+            ]
+            
+            exit_code = run_command(convert_command, status_callback)
+            if exit_code != 0:
+                log_status(status_callback, f"ERROR: GGUF conversion failed with exit code {exit_code}.")
+                return False
+            log_status(status_callback, "GGUF conversion successful.")
+
+            # --- 5. Create Ollama Modelfile ---
+            log_status(status_callback, "Step 5: Creating Ollama Modelfile...")
+            modelfile_content = f"FROM {os.path.basename(gguf_output_path)}"
+            modelfile_path = os.path.join(temp_dir, 'Modelfile')
+            with open(modelfile_path, 'w') as f:
+                f.write(modelfile_content)
+            log_status(status_callback, f"Modelfile created at: {modelfile_path}")
+
+            # --- 6. Import into Ollama ---
+            log_status(status_callback, f"Step 6: Importing model '{ollama_model_name}' into Ollama...")
+            import_command = [
+                'ollama', 'create', ollama_model_name, '-f', 'Modelfile'
+            ]
+            
+            # Run the command from within the temp_dir
+            exit_code = run_command(import_command, status_callback, cwd=temp_dir)
+            
+            if exit_code != 0:
+                log_status(status_callback, f"ERROR: Ollama import failed with exit code {exit_code}.")
+                return False
+
+        log_status(status_callback, f"SUCCESS: Model '{ollama_model_name}' has been successfully imported into Ollama!")
+        return True
+
+    except Exception as e:
+        log_status(status_callback, f"An unexpected error occurred: {e}")
+        import traceback
+        log_status(status_callback, traceback.format_exc())
+        return False
 
 def do_merge_and_import(adapter_dir, ollama_model_name, status_callback=None):
     """
@@ -136,18 +217,12 @@ def do_merge_and_import(adapter_dir, ollama_model_name, status_callback=None):
 
             # --- 6. Import into Ollama ---
             log_status(status_callback, f"Step 6: Importing model '{ollama_model_name}' into Ollama...")
-            # We need to run the command from within the temp_dir so Ollama can find the GGUF file
             import_command = [
                 'ollama', 'create', ollama_model_name, '-f', 'Modelfile'
             ]
             
             # Ollama command needs to be run where the Modelfile and GGUF are
-            original_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            
-            exit_code = run_command(import_command, status_callback)
-            
-            os.chdir(original_cwd) # Change back to the original directory
+            exit_code = run_command(import_command, status_callback, cwd=temp_dir)
             
             if exit_code != 0:
                 log_status(status_callback, f"ERROR: Ollama import failed with exit code {exit_code}.")
@@ -164,24 +239,29 @@ def do_merge_and_import(adapter_dir, ollama_model_name, status_callback=None):
 
 # --- Command-Line Interface ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Merge a LoRA adapter, convert to GGUF, and import into Ollama.")
-    parser.add_argument(
-        "adapter_dir", 
-        type=str, 
-        help="Path to the directory containing the 'final_lora_adapter'."
-    )
-    parser.add_argument(
-        "ollama_model_name", 
-        type=str, 
-        help="The name for the model in Ollama (e.g., 'my-custom-model:7b')."
-    )
+    parser = argparse.ArgumentParser(description="Merge a LoRA adapter or convert a base model, then import into Ollama.")
     
+    # Subparsers for different commands
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    # Subparser for merging LoRA
+    parser_merge = subparsers.add_parser('merge', help="Merge a LoRA adapter, convert, and import.")
+    parser_merge.add_argument("adapter_dir", type=str, help="Path to the directory containing the 'final_lora_adapter'.")
+    parser_merge.add_argument("ollama_model_name", type=str, help="The name for the model in Ollama (e.g., 'my-custom-model:7b').")
+
+    # Subparser for converting a base model
+    parser_convert = subparsers.add_parser('convert_base', help="Convert a base Hugging Face model and import.")
+    parser_convert.add_argument("base_model_id", type=str, help="The Hugging Face ID of the base model to convert (e.g., 'Qwen/Qwen1.5-7B-Chat').")
+    parser_convert.add_argument("ollama_model_name", type=str, help="The name for the new model in Ollama.")
+
     args = parser.parse_args()
 
-    # Find the final_lora_adapter directory if a parent is provided
-    final_adapter_path = os.path.join(args.adapter_dir, "final_lora_adapter")
-    if not os.path.exists(final_adapter_path):
-        print(f"Error: 'final_lora_adapter' not found in '{args.adapter_dir}'")
-        sys.exit(1)
-
-    do_merge_and_import(final_adapter_path, args.ollama_model_name)
+    if args.command == 'merge':
+        final_adapter_path = os.path.join(args.adapter_dir, "final_lora_adapter")
+        if not os.path.exists(final_adapter_path):
+            print(f"Error: 'final_lora_adapter' not found in '{args.adapter_dir}'")
+            sys.exit(1)
+        do_merge_and_import(final_adapter_path, args.ollama_model_name)
+    
+    elif args.command == 'convert_base':
+        convert_base_model_to_ollama(args.base_model_id, args.ollama_model_name)
