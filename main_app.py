@@ -7,7 +7,7 @@ import os
 import json
 from train_core import start_training, get_local_lora_base_models, get_existing_lora_dirs
 from merge_and_import import do_merge_and_import, convert_base_model_to_ollama
-from inference_core import load_model_and_tokenizer, generate_response
+from inference_core import load_model_and_tokenizer, generate_response, start_gradio_interface
 
 CONFIG_FILE = "config.json"
 
@@ -203,6 +203,11 @@ class MainApplication(tk.Frame):
         self.add_interactive_widget(self.inference_refresh_button)
         self.add_interactive_widget(self.load_inference_model_button)
 
+        # Add Share Model button
+        self.share_model_button = ttk.Button(model_frame, text="分享模型 (Gradio)", command=self.start_gradio_share_thread, style="Accent.TButton", state=tk.DISABLED)
+        self.share_model_button.pack(side=tk.RIGHT, padx=5)
+        self.add_interactive_widget(self.share_model_button)
+
         system_prompt_frame = ttk.LabelFrame(top_frame, text="2. 系统指令 (System Prompt)", padding="10")
         system_prompt_frame.pack(fill=tk.X, expand=True, pady=(10, 0))
         self.system_prompt_entry = ttk.Entry(system_prompt_frame)
@@ -274,6 +279,12 @@ class MainApplication(tk.Frame):
                 widget.config(state=state)
             except tk.TclError:
                 pass
+        # Special handling for share_model_button
+        if hasattr(self, 'share_model_button'):
+            if busy or self.inference_model is None:
+                self.share_model_button.config(state=tk.DISABLED)
+            else:
+                self.share_model_button.config(state=tk.NORMAL)
 
     def update_chat_display(self, role, text):
         self.chat_history_text.config(state='normal')
@@ -298,8 +309,8 @@ class MainApplication(tk.Frame):
         self.refresh_model_lists()
 
     def refresh_model_lists(self):
-        mode = self.train_mode.get()
         self.model_refresh_button.config(state=tk.DISABLED)
+        mode = self.train_mode.get()
         if mode == "new":
             self.model_select_combobox.set("正在扫描本地基座模型...")
             models, error = get_local_lora_base_models()
@@ -517,8 +528,31 @@ class MainApplication(tk.Frame):
         self.inference_model, self.inference_tokenizer = load_model_and_tokenizer(adapter_path, self.status_queue)
         if self.inference_model is None:
             self.status_queue.put("ERROR: 模型加载失败，请检查日志。")
+            self.share_model_button.config(state=tk.DISABLED) # Disable share button on failure
         else:
             self.status_queue.put(f"SUCCESS: 模型 {os.path.basename(model_path)} 加载成功！")
+            self.share_model_button.config(state=tk.NORMAL) # Enable share button on success
+
+    def start_gradio_share_thread(self):
+        if self.is_busy("分享模型"): return
+        if self.inference_model is None or self.inference_tokenizer is None:
+            messagebox.showerror("错误", "请先成功加载一个模型才能分享！")
+            return
+
+        system_prompt = self.system_prompt_entry.get().strip()
+
+        self.set_ui_busy(True)
+        self.clear_logs()
+        self.status_label.config(text="状态: 正在启动 Gradio 服务并分享模型...")
+        self.progress_bar.start()
+
+        # Gradio 启动后会阻塞，所以必须在新线程中运行
+        self.active_thread = threading.Thread(
+            target=start_gradio_interface,
+            args=(self.inference_model, self.inference_tokenizer, system_prompt, self.status_queue.put),
+            daemon=True
+        )
+        self.active_thread.start()
 
     def send_message_thread(self):
         if self.is_busy("生成回复"): return
@@ -594,18 +628,37 @@ class MainApplication(tk.Frame):
         # Check general status queue (for merge, convert, model loading)
         while not self.status_queue.empty():
             log_entry = self.status_queue.get_nowait()
-            self.append_log(log_entry)
+            # 注意：不要在这里调用self.append_log，因为在某些条件下会重复添加
             self.status_label.config(text=f"状态: {log_entry}")
-            if "SUCCESS:" in log_entry or "模型准备就绪" in log_entry:
-                messagebox.showinfo("成功", log_entry)
-                self.set_ui_busy(False)
-                self.progress_bar.stop()
-                self.status_label.config(text="状态: 空闲")
-            elif "ERROR:" in log_entry:
+            
+            # 检查是否有错误消息
+            if "ERROR:" in log_entry or "Connection aborted" in log_entry or "ConnectionError" in log_entry:
+                self.append_log(log_entry)
                 messagebox.showerror("失败", log_entry)
                 self.set_ui_busy(False)
                 self.progress_bar.stop()
                 self.status_label.config(text="状态: 空闲")
+            # 检查所有可能的成功消息
+            elif "SUCCESS:" in log_entry or "模型准备就绪" in log_entry:
+                # 这是最终的成功状态，释放UI
+                self.append_log(log_entry)
+                messagebox.showinfo("成功", log_entry)
+                self.set_ui_busy(False)
+                self.progress_bar.stop()
+                self.status_label.config(text="状态: 空闲")
+            elif "分词器加载成功" in log_entry or "基础模型加载成功" in log_entry or "LoRA适配器应用成功" in log_entry:
+                # 这些是加载过程中的中间状态，添加到日志但不弹出消息框
+                self.append_log(log_entry)
+            elif "Gradio 界面已启动，公网分享链接:" in log_entry or "Gradio 界面已成功分享！" in log_entry:
+                # 特殊处理Gradio分享相关消息
+                self.append_log(log_entry)
+                messagebox.showinfo("成功", log_entry)
+                self.set_ui_busy(False)
+                self.progress_bar.stop()
+                self.status_label.config(text="状态: 空闲")
+            else:
+                # 其他消息也添加到日志中
+                self.append_log(log_entry)
 
         # Check inference response queue
         while not self.response_queue.empty():

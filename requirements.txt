@@ -5,3 +5,4 @@ accelerate
 bitsandbytes
 sentencepiece
 tiktoken
+gradio
